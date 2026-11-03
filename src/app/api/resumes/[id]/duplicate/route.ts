@@ -26,7 +26,9 @@ export async function POST(_req: Request, { params }: Params) {
   const result = await duplicateResume(id, session.user.id, isPro)
 
   if ('error' in result) {
-    return NextResponse.json({ error: result.error }, { status: 403 })
+    // Not found / not owned -> 404 (never reveal existence); plan limit -> 403
+    const status = result.code === 'NOT_FOUND' ? 404 : 403
+    return NextResponse.json({ error: result.error }, { status })
   }
 
   return NextResponse.json({ resume: result }, { status: 201 })

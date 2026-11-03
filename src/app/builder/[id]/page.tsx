@@ -1,6 +1,6 @@
 import { notFound, redirect } from 'next/navigation'
 import { auth } from '@/lib/auth'
-import { getResumeById } from '@/lib/resume-sync'
+import { getOwnedResume } from '@/lib/resume-sync'
 import { BuilderClient } from '@/components/builder/BuilderClient'
 import type { Metadata } from 'next'
 
@@ -12,7 +12,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params
   const session = await auth()
   if (!session?.user?.id) return { title: 'Builder — Resumify' }
-  const resume = await getResumeById(id, session.user.id)
+  const resume = await getOwnedResume(id, session.user.id)
   return { title: `${resume?.title ?? 'Resume'} — Resumify` }
 }
 
@@ -21,7 +21,7 @@ export default async function BuilderPage({ params }: Props) {
   if (!session?.user?.id) redirect('/auth/login')
 
   const { id } = await params
-  const resume = await getResumeById(id, session.user.id)
+  const resume = await getOwnedResume(id, session.user.id)
   if (!resume) notFound()
 
   return (

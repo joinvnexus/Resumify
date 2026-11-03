@@ -10,6 +10,7 @@ import type { ResumeState } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────
 
+/** Full resume row. Owner-only: never return this to anyone but the owner. */
 export interface DbResume {
   id: string
   title: string
@@ -22,20 +23,38 @@ export interface DbResume {
   userId: string
 }
 
+/**
+ * What a public (share-link) visitor may see.
+ * Deliberately excludes userId and any ownership/internal fields.
+ */
+export interface PublicResume {
+  id: string
+  title: string
+  slug: string
+  viewCount: number
+  data: ResumeState
+}
+
+/** Prisma "record to update/delete not found" (P2025) without importing Prisma types. */
+export function isRecordNotFound(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'P2025'
+}
+
 // ─── Read ─────────────────────────────────────────────────────
 
 /**
- * Load a single resume by ID.
- * Returns null if not found or if the requesting user doesn't own it
- * (unless it's public).
+ * Load a resume owned by `userId`.
+ * Returns null if it doesn't exist OR belongs to someone else (callers must
+ * treat both identically, e.g. 404, so existence is never leaked).
+ * Public resumes are NOT readable through this function by non-owners —
+ * use getResumeBySlug for public viewing.
  */
-export async function getResumeById(
+export async function getOwnedResume(
   id: string,
-  requestingUserId?: string,
+  userId: string,
 ): Promise<DbResume | null> {
-  const resume = await db.resume.findUnique({ where: { id } })
+  const resume = await db.resume.findFirst({ where: { id, userId } })
   if (!resume) return null
-  if (!resume.isPublic && resume.userId !== requestingUserId) return null
 
   return {
     ...resume,
@@ -45,13 +64,19 @@ export async function getResumeById(
 
 /**
  * Load a resume by its public share slug.
- * Only returns public resumes.
+ * Only returns public resumes, and only public-safe fields.
  */
-export async function getResumeBySlug(slug: string): Promise<DbResume | null> {
-  const resume = await db.resume.findUnique({ where: { slug } })
-  if (!resume || !resume.isPublic) return null
+export async function getResumeBySlug(slug: string): Promise<PublicResume | null> {
+  const resume = await db.resume.findFirst({
+    where: { slug, isPublic: true },
+    select: { id: true, title: true, slug: true, viewCount: true, data: true },
+  })
+  if (!resume) return null
   return {
-    ...resume,
+    id: resume.id,
+    title: resume.title,
+    slug: resume.slug,
+    viewCount: resume.viewCount,
     data: (resume.data as unknown as ResumeState) ?? DEFAULT_RESUME_STATE,
   }
 }
@@ -90,11 +115,11 @@ export async function saveResumeData(
   data: Partial<ResumeState>,
   titleOverride?: string,
 ): Promise<{ id: string; updatedAt: Date } | null> {
-  const resume = await db.resume.findUnique({
-    where: { id },
-    select: { userId: true, data: true },
+  const resume = await db.resume.findFirst({
+    where: { id, userId },
+    select: { data: true },
   })
-  if (!resume || resume.userId !== userId) return null
+  if (!resume) return null
 
   // Merge incoming partial data with existing stored state
   const existingData = (resume.data as unknown as ResumeState) ?? DEFAULT_RESUME_STATE
@@ -105,13 +130,16 @@ export async function saveResumeData(
     titleOverride ??
     ([mergedData.personal?.fname, mergedData.personal?.lname].filter(Boolean).join(' ') || 'Untitled Resume')
 
-  const updated = await db.resume.update({
-    where: { id },
-    data: { data: mergedData as object, title: autoTitle },
-    select: { id: true, updatedAt: true },
-  })
-
-  return updated
+  try {
+    return await db.resume.update({
+      where: { id, userId },
+      data: { data: mergedData as object, title: autoTitle },
+      select: { id: true, updatedAt: true },
+    })
+  } catch (err) {
+    if (isRecordNotFound(err)) return null
+    throw err
+  }
 }
 
 /**
@@ -122,14 +150,16 @@ export async function duplicateResume(
   sourceId: string,
   userId: string,
   isPro: boolean,
-): Promise<{ id: string; title: string } | { error: string }> {
-  const source = await db.resume.findUnique({ where: { id: sourceId } })
-  if (!source || source.userId !== userId) return { error: 'Not found' }
+): Promise<
+  { id: string; title: string } | { error: string; code: 'NOT_FOUND' | 'LIMIT_REACHED' }
+> {
+  const source = await db.resume.findFirst({ where: { id: sourceId, userId } })
+  if (!source) return { error: 'Not found', code: 'NOT_FOUND' }
 
   if (!isPro) {
     const count = await db.resume.count({ where: { userId } })
     if (count >= 3) {
-      return { error: 'Free plan allows up to 3 resumes. Upgrade to Pro.' }
+      return { error: 'Free plan allows up to 3 resumes. Upgrade to Pro.', code: 'LIMIT_REACHED' }
     }
   }
 
@@ -153,13 +183,53 @@ export async function toggleResumePublic(
   id: string,
   userId: string,
 ): Promise<{ isPublic: boolean; slug: string } | null> {
-  const resume = await db.resume.findUnique({ where: { id } })
-  if (!resume || resume.userId !== userId) return null
-
-  const updated = await db.resume.update({
-    where: { id },
-    data: { isPublic: !resume.isPublic },
-    select: { isPublic: true, slug: true },
+  const resume = await db.resume.findFirst({
+    where: { id, userId },
+    select: { isPublic: true },
   })
-  return updated
+  if (!resume) return null
+
+  try {
+    return await db.resume.update({
+      where: { id, userId },
+      data: { isPublic: !resume.isPublic },
+      select: { isPublic: true, slug: true },
+    })
+  } catch (err) {
+    if (isRecordNotFound(err)) return null
+    throw err
+  }
+}
+
+/**
+ * Update a resume owned by `userId`. Returns null if not found / not owned.
+ */
+export async function updateOwnedResume(
+  id: string,
+  userId: string,
+  data: { title?: string; data?: object; isPublic?: boolean },
+) {
+  try {
+    return await db.resume.update({
+      where: { id, userId },
+      data,
+      select: { id: true, title: true, slug: true, isPublic: true, updatedAt: true },
+    })
+  } catch (err) {
+    if (isRecordNotFound(err)) return null
+    throw err
+  }
+}
+
+/**
+ * Delete a resume owned by `userId`. Returns false if not found / not owned.
+ */
+export async function deleteOwnedResume(id: string, userId: string): Promise<boolean> {
+  try {
+    await db.resume.delete({ where: { id, userId } })
+    return true
+  } catch (err) {
+    if (isRecordNotFound(err)) return false
+    throw err
+  }
 }

@@ -34,6 +34,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Score must be 0–100' }, { status: 400 })
   }
 
-  await recordAtsScore(session.user.id, body.resumeId, body.score)
+  const recorded = await recordAtsScore(session.user.id, body.resumeId, body.score)
+  if (!recorded) {
+    return NextResponse.json({ error: 'Resume not found' }, { status: 404 })
+  }
   return NextResponse.json({ ok: true })
 }
