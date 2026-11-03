@@ -8,45 +8,60 @@
  * - Querying admin-level aggregate stats
  */
 
+import type { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
 
 // ─── Record events ────────────────────────────────────────────
 
 /**
  * Records a view event for a public resume.
+ * Does nothing (and writes nothing) if the resume doesn't exist or isn't
+ * public, so private/unknown ids can't be used to create analytics rows.
  * Also increments the denormalized viewCount on the Resume row.
  * Call from the /api/resumes/[id]/view endpoint.
  */
 export async function recordResumeView(
   resumeId: string,
   options: { referrer?: string; country?: string } = {},
-): Promise<void> {
-  await Promise.all([
-    db.resumeView.create({
+): Promise<boolean> {
+  return db.$transaction(async (tx: Prisma.TransactionClient) => {
+    const { count } = await tx.resume.updateMany({
+      where: { id: resumeId, isPublic: true },
+      data: { viewCount: { increment: 1 } },
+    })
+    if (count === 0) return false
+
+    await tx.resumeView.create({
       data: {
         resumeId,
         referrer: options.referrer?.slice(0, 200) ?? null,
         country: options.country ?? null,
       },
-    }),
-    db.resume.update({
-      where: { id: resumeId, isPublic: true },
-      data: { viewCount: { increment: 1 } },
-    }),
-  ])
+    })
+    return true
+  })
 }
 
 /**
- * Records an ATS score snapshot for a user's resume.
+ * Records an ATS score snapshot for a resume the user owns.
+ * Returns false (and writes nothing) if the resume doesn't exist or belongs
+ * to another user.
  */
 export async function recordAtsScore(
   userId: string,
   resumeId: string,
   score: number,
-): Promise<void> {
+): Promise<boolean> {
+  const owned = await db.resume.findFirst({
+    where: { id: resumeId, userId },
+    select: { id: true },
+  })
+  if (!owned) return false
+
   await db.atsScoreHistory.create({
     data: { userId, resumeId, score },
   })
+  return true
 }
 
 // ─── User dashboard queries ───────────────────────────────────

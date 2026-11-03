@@ -3,7 +3,7 @@ export const runtime = 'nodejs'
 
 import { NextResponse } from 'next/server'
 import { auth } from '@/lib/auth'
-import { db } from '@/lib/db'
+import { getOwnedResume, updateOwnedResume, deleteOwnedResume } from '@/lib/resume-sync'
 import { z } from 'zod'
 
 interface Params {
@@ -16,7 +16,9 @@ const updateResumeSchema = z.object({
   isPublic: z.boolean().optional(),
 })
 
-// GET /api/resumes/:id
+// GET /api/resumes/:id — owner only.
+// Public viewing goes through /r/[slug]; other users (and private/nonexistent
+// ids) all get the same 404 so existence is never leaked.
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth()
   if (!session?.user?.id) {
@@ -25,15 +27,9 @@ export async function GET(_req: Request, { params }: Params) {
 
   const { id } = await params
 
-  const resume = await db.resume.findUnique({ where: { id } })
-
+  const resume = await getOwnedResume(id, session.user.id)
   if (!resume) {
     return NextResponse.json({ error: 'Resume not found' }, { status: 404 })
-  }
-
-  // Only owner can access non-public resumes
-  if (resume.userId !== session.user.id && !resume.isPublic) {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
   return NextResponse.json({ resume })
@@ -57,20 +53,14 @@ export async function PATCH(req: Request, { params }: Params) {
     )
   }
 
-  const resume = await db.resume.findUnique({ where: { id } })
-  if (!resume || resume.userId !== session.user.id) {
+  const updated = await updateOwnedResume(id, session.user.id, {
+    ...(parsed.data.title !== undefined && { title: parsed.data.title }),
+    ...(parsed.data.data !== undefined && { data: parsed.data.data as object }),
+    ...(parsed.data.isPublic !== undefined && { isPublic: parsed.data.isPublic }),
+  })
+  if (!updated) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
-
-  const updated = await db.resume.update({
-    where: { id },
-    data: {
-      ...(parsed.data.title !== undefined && { title: parsed.data.title }),
-      ...(parsed.data.data !== undefined && { data: parsed.data.data as object }),
-      ...(parsed.data.isPublic !== undefined && { isPublic: parsed.data.isPublic }),
-    },
-    select: { id: true, title: true, slug: true, isPublic: true, updatedAt: true },
-  })
 
   return NextResponse.json({ resume: updated })
 }
@@ -84,12 +74,10 @@ export async function DELETE(_req: Request, { params }: Params) {
 
   const { id } = await params
 
-  const resume = await db.resume.findUnique({ where: { id } })
-  if (!resume || resume.userId !== session.user.id) {
+  const deleted = await deleteOwnedResume(id, session.user.id)
+  if (!deleted) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
-
-  await db.resume.delete({ where: { id } })
 
   return NextResponse.json({ message: 'Resume deleted' })
 }
