@@ -143,7 +143,7 @@ These variables must be set in `.env.local` for the app to run:
 | `EMAIL_FROM` | Default "from" email address | `noreply@Resumify.app` |
 | `NEXT_PUBLIC_POSTHOG_KEY` | PostHog project key | (analytics disabled) |
 | `NEXT_PUBLIC_POSTHOG_HOST` | PostHog API host | `https://app.posthog.com` |
-| `ADMIN_EMAILS` | Comma-separated admin emails for `/admin` | |
+| `ADMIN_EMAILS` | Comma-separated admin emails for `/admin` and `/api/admin/*` (case-insensitive). **Required for admin access: if unset or empty, nobody is an admin.** | |
 
 ---
 

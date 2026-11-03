@@ -1,23 +1,13 @@
-import { auth } from '@/lib/auth'
-import { redirect } from 'next/navigation'
+import { requireAdminPage } from '@/lib/admin-guard'
 import Link from 'next/link'
 import { FileText, LayoutDashboard, Users } from 'lucide-react'
-
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS ?? '')
-  .split(',')
-  .map((e) => e.trim())
-  .filter(Boolean)
 
 export default async function AdminLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
-  const session = await auth()
-  if (!session?.user?.email) redirect('/auth/login')
-  if (ADMIN_EMAILS.length > 0 && !ADMIN_EMAILS.includes(session.user.email)) {
-    redirect('/dashboard')
-  }
+  await requireAdminPage()
 
   return (
     <div className="min-h-screen bg-[var(--bg)] flex">
